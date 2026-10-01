@@ -36,6 +36,11 @@ private:
     void DestroyFramebuffer();
     void Clear(DWORD color);
     void DrawTerrain(const Terrain& terrain, const Camera& camera);
+    void AddQuad(float x0, float y0, float z0,
+                 float x1, float y1, float z1,
+                 float x2, float y2, float z2,
+                 float x3, float y3, float z3,
+                 DWORD color, const Camera& camera);
 
     void PutPixel(int x, int y, float depth, DWORD color);
     void DrawTriangle(float x0, float y0, float z0,
