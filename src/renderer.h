@@ -38,6 +38,9 @@ private:
     float m_camSinPitch;
     float m_projScaleX;
     float m_projScaleY;
+    float m_cachedYaw;
+    float m_cachedPitch;
+    bool m_cameraCacheValid;
 
     bool CreateFramebuffer();
     void DestroyFramebuffer();
