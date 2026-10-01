@@ -473,8 +473,8 @@ void Renderer::Render(const Terrain& t, const Camera& c)
 
     screen = GetDC(m_hwnd);
     if (screen) {
-        BitBlt(screen, 0, 0, m_width, m_height,
-               m_dc, 0, 0, SRCCOPY);
+        StretchBlt(screen, 0, 0, m_width * 2, m_height * 2,
+                   m_dc, 0, 0, m_width, m_height, SRCCOPY);
         ReleaseDC(m_hwnd, screen);
     }
 }
