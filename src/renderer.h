@@ -41,6 +41,7 @@ private:
     float m_cachedYaw;
     float m_cachedPitch;
     bool m_cameraCacheValid;
+    bool m_projectionInitialized;
 
     bool CreateFramebuffer();
     void DestroyFramebuffer();
