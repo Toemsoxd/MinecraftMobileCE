@@ -6,18 +6,15 @@ static const float FOV = 70.0f * PI / 180.0f;
 static const float NEAR_Z = 0.10f;
 static const float FAR_Z = 64.0f;
 
-/* Deliberately small for the S730. Increase after profiling. */
 static const int TERRAIN_RADIUS = 7;
 static const int TERRAIN_RADIUS2 = TERRAIN_RADIUS * TERRAIN_RADIUS;
 
-/* 12.12 is enough for our 240x320 framebuffer and keeps edge math in 32-bit. */
 static const int FP_SHIFT = 7;
 static const int FP_ONE = 1 << FP_SHIFT;
 
 static DWORD Color(unsigned char r, unsigned char g, unsigned char b)
 {
-    /* BI_RGB DIBs store bytes as B,G,R,0 on little-endian CE. */
-    return ((DWORD)b) | ((DWORD)g << 8) | ((DWORD)r << 16);
+        return ((DWORD)b) | ((DWORD)g << 8) | ((DWORD)r << 16);
 }
 
 static int ClampInt(int v, int lo, int hi)
@@ -46,8 +43,7 @@ Renderer::~Renderer()
 bool Renderer::Initialize(HWND hwnd, int width, int height)
 {
     m_hwnd = hwnd;
-    /* Render at 160x120, then upscale 2x to a 320x240 landscape display. */
-    m_width = width / 2;
+        m_width = width / 2;
     m_height = height / 2;
     m_projectionInitialized = false;
     m_cameraCacheValid = false;
@@ -148,14 +144,6 @@ void Renderer::Clear(DWORD color)
     }
 }
 
-/*
- * Fast triangle rasterizer:
- * - screen coordinates are converted to 16.16 fixed point once
- * - edge functions are incremented with integer additions per pixel
- * - depth is also incremented instead of being recomputed with barycentrics
- *
- * This removes the old per-pixel float divisions/multiplications.
- */
 void Renderer::DrawTriangle(float x0, float y0, float z0,
                             float x1, float y1, float z1,
                             float x2, float y2, float z2,
@@ -179,8 +167,7 @@ void Renderer::DrawTriangle(float x0, float y0, float z0,
     DWORD* pixels = (DWORD*)m_pixels;
     unsigned short* depth = m_depth;
 
-    /* Integer bounding box: no floor()/ceil() in the hot path. */
-    minX = fx0;
+        minX = fx0;
     maxX = fx0;
     minY = fy0;
     maxY = fy0;
@@ -193,8 +180,7 @@ void Renderer::DrawTriangle(float x0, float y0, float z0,
     if (fy1 > maxY) maxY = fy1;
     if (fy2 > maxY) maxY = fy2;
 
-    /* Convert fixed-point bounds to pixel bounds. */
-    minX = minX >> FP_SHIFT;
+        minX = minX >> FP_SHIFT;
     maxX = (maxX + FP_ONE - 1) >> FP_SHIFT;
     minY = minY >> FP_SHIFT;
     maxY = (maxY + FP_ONE - 1) >> FP_SHIFT;
@@ -207,12 +193,7 @@ void Renderer::DrawTriangle(float x0, float y0, float z0,
     if (minX > maxX || minY > maxY)
         return;
 
-    /*
-     * Edge functions are kept in 12.12 fixed point.
-     * The per-pixel loop now uses only integer additions/comparisons
-     * for coverage instead of three floating-point edge equations.
-     */
-    area = (long)(fx1 - fx0) * (long)(fy2 - fy0) -
+        area = (long)(fx1 - fx0) * (long)(fy2 - fy0) -
            (long)(fy1 - fy0) * (long)(fx2 - fx0);
 
     if (area == 0)
@@ -226,11 +207,7 @@ void Renderer::DrawTriangle(float x0, float y0, float z0,
     e1down = (long)(fx2 - fx1);
     e2down = (long)(fx0 - fx2);
 
-    /*
-     * Evaluate edges at the first pixel center. Using fixed-point
-     * coordinates avoids repeated float arithmetic in every pixel.
-     */
-    {
+        {
         long px = ((long)minX << FP_SHIFT) + (FP_ONE >> 1);
         long py = ((long)minY << FP_SHIFT) + (FP_ONE >> 1);
 
@@ -256,8 +233,7 @@ void Renderer::DrawTriangle(float x0, float y0, float z0,
     z1i = ClampInt((int)((z1 / FAR_Z) * 65534.0f), 0, 65534);
     z2i = ClampInt((int)((z2 / FAR_Z) * 65534.0f), 0, 65534);
 
-    /* Depth setup is done once per triangle; pixels only add dzdx. */
-    {
+        {
         float screenArea = (x1 - x0) * (y2 - y0) -
                            (y1 - y0) * (x2 - x0);
 
@@ -315,8 +291,7 @@ bool Renderer::Project(float x, float y, float z,
     float vx, vy, vz;
     float ux, uy, uz;
 
-    /* Camera basis uses cached trig values. */
-    vx = dx * m_camCosYaw - dz * m_camSinYaw;
+        vx = dx * m_camCosYaw - dz * m_camSinYaw;
     vz = dx * m_camSinYaw + dz * m_camCosYaw;
     vy = dy;
 
@@ -365,10 +340,12 @@ void Renderer::DrawTerrain(const Terrain& t, const Camera& c)
     int cx = (int)c.x;
     int cz = (int)c.z;
     int z;
-    DWORD grass = Color(79, 171, 69);
-    DWORD side1 = Color(94, 69, 43);
-    DWORD side2 = Color(79, 59, 41);
-    DWORD side3 = Color(69, 51, 36);
+
+    DWORD topColor = Color(79, 171, 69);
+    DWORD westColor = Color(94, 69, 43);
+    DWORD eastColor = Color(79, 59, 41);
+    DWORD northColor = Color(69, 51, 36);
+    DWORD southColor = Color(86, 63, 40);
 
     for (z = cz - TERRAIN_RADIUS; z <= cz + TERRAIN_RADIUS; ++z) {
         int x;
@@ -378,63 +355,64 @@ void Renderer::DrawTerrain(const Terrain& t, const Camera& c)
 
         for (x = cx - TERRAIN_RADIUS; x <= cx + TERRAIN_RADIUS; ++x) {
             int h;
-            int l, rr, f, b;
+            int left, right, north, south;
+            int dx = x - cx;
+            int dz = z - cz;
 
             if (x < 0 || x >= WORLD_SIZE)
                 continue;
 
-            /* Skip the square's corners: a circular view covers fewer columns. */
-            {
-                int dx = x - cx;
-                int dz = z - cz;
-                if (dx * dx + dz * dz > TERRAIN_RADIUS2)
-                    continue;
-            }
+            if (dx * dx + dz * dz > TERRAIN_RADIUS2)
+                continue;
 
             h = t.GetHeight(x, z);
-            l = (x > 0) ? t.GetHeight(x - 1, z) : h;
-            rr = (x < WORLD_SIZE - 1) ? t.GetHeight(x + 1, z) : h;
-            f = (z > 0) ? t.GetHeight(x, z - 1) : h;
-            b = (z < WORLD_SIZE - 1) ? t.GetHeight(x, z + 1) : h;
+            left = (x > 0) ? t.GetHeight(x - 1, z) : h;
+            right = (x < WORLD_SIZE - 1) ? t.GetHeight(x + 1, z) : h;
+            north = (z > 0) ? t.GetHeight(x, z - 1) : h;
+            south = (z < WORLD_SIZE - 1) ? t.GetHeight(x, z + 1) : h;
 
-            /* Top surface. */
+            /*
+             * Every column is a prism from its neighbor height to its top.
+             * We only emit a wall when the adjacent column is lower.
+             * The wall geometry is independent of camera position.
+             */
             AddQuad((float)x, (float)h, (float)z,
                     (float)x + 1.0f, (float)h, (float)z,
                     (float)x + 1.0f, (float)h, (float)z + 1.0f,
                     (float)x, (float)h, (float)z + 1.0f,
-                    grass, c);
+                    topColor, c);
 
-            /*
-             * Only draw side faces on the side where the camera actually
-             * sits. This removes roughly half of the exposed wall work.
-             */
-            if (l < h && c.x <= (float)x)
-                AddQuad((float)x, (float)l, (float)z,
-                        (float)x, (float)h, (float)z,
+            if (left < h) {
+                AddQuad((float)x, (float)left, (float)z + 1.0f,
                         (float)x, (float)h, (float)z + 1.0f,
-                        (float)x, (float)l, (float)z + 1.0f,
-                        side1, c);
+                        (float)x, (float)h, (float)z,
+                        (float)x, (float)left, (float)z,
+                        westColor, c);
+            }
 
-            if (rr < h && c.x >= (float)(x + 1))
-                AddQuad((float)x + 1.0f, (float)rr, (float)z + 1.0f,
-                        (float)x + 1.0f, (float)h, (float)z + 1.0f,
+            if (right < h) {
+                AddQuad((float)x + 1.0f, (float)right, (float)z,
                         (float)x + 1.0f, (float)h, (float)z,
-                        (float)x + 1.0f, (float)rr, (float)z,
-                        side2, c);
+                        (float)x + 1.0f, (float)h, (float)z + 1.0f,
+                        (float)x + 1.0f, (float)right, (float)z + 1.0f,
+                        eastColor, c);
+            }
 
-            if (f < h && c.z <= (float)z)
-                AddQuad((float)x, (float)f, (float)z,
-                        (float)x + 1.0f, (float)f, (float)z,
+            if (north < h) {
+                AddQuad((float)x + 1.0f, (float)north, (float)z,
                         (float)x + 1.0f, (float)h, (float)z,
                         (float)x, (float)h, (float)z,
-                        side3, c);
+                        (float)x, (float)north, (float)z,
+                        northColor, c);
+            }
 
-            if (b < h && c.z >= (float)(z + 1))
-                AddQuad((float)x + 1.0f, (float)b, (float)z + 1.0f,
-                        (float)x, (float)b, (float)z + 1.0f,
+            if (south < h) {
+                AddQuad((float)x, (float)south, (float)z + 1.0f,
                         (float)x, (float)h, (float)z + 1.0f,
                         (float)x + 1.0f, (float)h, (float)z + 1.0f,
-                        side1, c);
+                        (float)x + 1.0f, (float)south, (float)z + 1.0f,
+                        southColor, c);
+            }
         }
     }
 }
@@ -448,8 +426,7 @@ void Renderer::Render(const Terrain& t, const Camera& c)
     if (!m_dc || !m_pixels)
         return;
 
-    /* Calculate camera trig exactly once per frame. */
-    if (!m_cameraCacheValid || c.yaw != m_cachedYaw || c.pitch != m_cachedPitch) {
+        if (!m_cameraCacheValid || c.yaw != m_cachedYaw || c.pitch != m_cachedPitch) {
         m_camCosYaw = (float)cos(c.yaw);
         m_camSinYaw = (float)sin(c.yaw);
         m_camCosPitch = (float)cos(c.pitch);
@@ -459,8 +436,7 @@ void Renderer::Render(const Terrain& t, const Camera& c)
         m_cameraCacheValid = true;
     }
 
-    /* FOV/aspect never change after Initialize(), so do this only once. */
-    if (!m_projectionInitialized) {
+        if (!m_projectionInitialized) {
         halfFovTan = (float)tan(FOV * 0.5f);
         aspect = (float)m_width / (float)m_height;
         m_projScaleX = ((float)m_width * 0.5f) / (halfFovTan * aspect);
