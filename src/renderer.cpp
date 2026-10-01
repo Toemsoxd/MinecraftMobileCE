@@ -174,13 +174,27 @@ void Renderer::DrawTriangle(float x0, float y0, float z0,
     X2 = (int)(x2 * (float)FP_ONE);
     Y2 = (int)(y2 * (float)FP_ONE);
 
-    minX = ClampInt((int)floor(x0), 0, m_width - 1);
-    maxX = ClampInt((int)ceil(x0 > x1 ? (x0 > x2 ? x0 : x2) :
-                                      (x1 > x2 ? x1 : x2)), 0, m_width - 1);
-    minY = ClampInt((int)floor(y0 < y1 ? (y0 < y2 ? y0 : y2) :
-                                      (y1 < y2 ? y1 : y2)), 0, m_height - 1);
-    maxY = ClampInt((int)ceil(y0 > y1 ? (y0 > y2 ? y0 : y2) :
-                                      (y1 > y2 ? y1 : y2)), 0, m_height - 1);
+    {
+        float minxf = x0;
+        float maxxf = x0;
+        float minyf = y0;
+        float maxyf = y0;
+
+        if (x1 < minxf) minxf = x1;
+        if (x2 < minxf) minxf = x2;
+        if (x1 > maxxf) maxxf = x1;
+        if (x2 > maxxf) maxxf = x2;
+
+        if (y1 < minyf) minyf = y1;
+        if (y2 < minyf) minyf = y2;
+        if (y1 > maxyf) maxyf = y1;
+        if (y2 > maxyf) maxyf = y2;
+
+        minX = ClampInt((int)floor(minxf), 0, m_width - 1);
+        maxX = ClampInt((int)ceil(maxxf), 0, m_width - 1);
+        minY = ClampInt((int)floor(minyf), 0, m_height - 1);
+        maxY = ClampInt((int)ceil(maxyf), 0, m_height - 1);
+    }
 
     if (minX > maxX || minY > maxY)
         return;
@@ -242,8 +256,9 @@ void Renderer::DrawTriangle(float x0, float y0, float z0,
         long long e0row = A0 * fx + B0 * fy + C0;
         long long e1row = A1 * fx + B1 * fy + C1;
         long long e2row = A2 * fx + B2 * fy + C2;
-        int rowZ = Z0 + (int)(((long long)dzdxI * (minX * FP_ONE - X0) +
-                               (long long)dzdyI * (minY * FP_ONE - Y0)) >> FP_SHIFT);
+        int rowZ = (Z0 << FP_SHIFT) +
+                   (int)(((long long)dzdxI * (minX * FP_ONE - X0) +
+                          (long long)dzdyI * (minY * FP_ONE - Y0)) >> FP_SHIFT);
 
         pixels = (DWORD*)m_pixels;
         depth = m_depth;
