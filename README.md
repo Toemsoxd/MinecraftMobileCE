@@ -6,10 +6,10 @@ From-scratch Minecraft 0.6.x-style demake targeting Windows CE .NET 4.2 / eMbedd
 
 - Full 256x256 procedural terrain generated in memory.
 - Deterministic seed.
-- Software 3D rasterizer written for the project.
-- DirectDraw output to the Windows CE primary surface.
-- 16-bit RGB565 framebuffer.
-- Z-buffered terrain triangles.
+- Direct3D 8 fixed-function 3D rendering.
+- Hardware device with software vertex processing requested.
+- Direct3D depth buffer / Z testing.
+- Single batched terrain draw call per frame.
 - Spectator camera.
 - WASD movement and Space ascent.
 - Arrow keys temporarily rotate the camera.
@@ -17,18 +17,20 @@ From-scratch Minecraft 0.6.x-style demake targeting Windows CE .NET 4.2 / eMbedd
 
 ## Target graphics API
 
-This prototype uses DirectDraw, not Direct3D.
+This prototype uses Direct3D 8.
 
-Windows CE .NET 4.2 documents DirectDraw through ddraw.h / ddraw.lib. The renderer creates an IDirectDraw4, obtains the primary surface as IDirectDrawSurface5, locks the surface, and runs the 3D rasterizer entirely in software.
+Windows CE .NET 4.2 officially documents Direct3DCreate8, IDirect3D8, IDirect3DDevice8, and D3d8.lib. The renderer creates a Direct3D 8 device, uses the fixed-function pipeline, enables the depth buffer, and submits the visible terrain as colored triangles.
 
-This avoids requiring a Direct3D 3D driver for the Minecraft renderer itself.
+The project no longer depends on DirectDraw.
 
 ## Build
 
 Link against:
 
-- ddraw.lib
+- d3d8.lib
 - the normal Windows CE system libraries supplied by the eMbedded Visual C++ 4.0 / CE .NET 4.2 SDK.
+
+Microsoft's CE 4.2 documentation lists D3d8.h and D3d8.lib as the header and link library for the Direct3D 8 interfaces.
 
 ## Controls
 
