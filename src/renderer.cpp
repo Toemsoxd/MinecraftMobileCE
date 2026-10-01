@@ -32,12 +32,6 @@ static const int DEPTH_MAX = 65535;
 
 typedef unsigned short Pixel;
 
-struct Vertex {
-    float x;
-    float y;
-    float z;
-};
-
 static Pixel RGB565(int r, int g, int b)
 {
     return (Pixel)(((r >> 3) << 11) |
