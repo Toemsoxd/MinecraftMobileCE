@@ -174,7 +174,7 @@ void Renderer::DrawTriangle(float x0, float y0, float z0,
     float dzdx, dzdy, zrow;
     int z0i, z1i, z2i;
     int x, y;
-    DWORD* pixels = (DWORD*)m_pixels;
+    WORD* pixels = (WORD*)m_pixels;
     unsigned short* depth = m_depth;
 
         minX = fx0;
@@ -558,7 +558,6 @@ void Renderer::Render(const Terrain& t, const Camera& c)
 
     screen = GetDC(m_hwnd);
     if (screen) {
-        SetStretchBltMode(screen, COLORONCOLOR);
         StretchBlt(screen, 0, 0, m_width * 2, m_height * 2,
                    m_dc, 0, 0, m_width, m_height, SRCCOPY);
         ReleaseDC(m_hwnd, screen);
