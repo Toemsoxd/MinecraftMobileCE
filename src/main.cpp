@@ -46,9 +46,9 @@ static void Update(float dt)
     float forward = 0.0f;
     float strafe = 0.0f;
 
-    if (Down('W')) forward += 1.0f;
-    if (Down('S')) forward -= 1.0f;
-    if (Down('D')) strafe += 1.0f;
+    if (Down('0')) forward += 1.0f;
+    if (Down('*')) forward -= 1.0f;
+    if (Down('4')) strafe += 1.0f;
     if (Down('A')) strafe -= 1.0f;
 
     if (forward != 0.0f || strafe != 0.0f) {
