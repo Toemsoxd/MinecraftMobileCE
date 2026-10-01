@@ -88,7 +88,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPTSTR cmd, int show)
 
     if (!g_renderer.Initialize(hwnd, 240, 320)) {
         MessageBox(hwnd,
-                   TEXT("Direct3D 8 initialization failed."),
+                   TEXT("Software renderer initialization failed."),
                    TEXT("MinecraftMobileCE"),
                    MB_OK | MB_ICONERROR);
         DestroyWindow(hwnd);
