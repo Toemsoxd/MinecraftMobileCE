@@ -7,9 +7,12 @@ static const float NEAR_Z = 0.10f;
 static const float FAR_Z = 64.0f;
 
 /* Deliberately small for the S730. Increase after profiling. */
-static const int TERRAIN_RADIUS = 11;
-static const int FP_SHIFT = 16;
-static const int FP_ONE = 65536;
+static const int TERRAIN_RADIUS = 9;
+static const int TERRAIN_RADIUS2 = TERRAIN_RADIUS * TERRAIN_RADIUS;
+
+/* 12.12 is enough for our 240x320 framebuffer and keeps edge math in 32-bit. */
+static const int FP_SHIFT = 12;
+static const int FP_ONE = 1 << FP_SHIFT;
 
 static DWORD Color(unsigned char r, unsigned char g, unsigned char b)
 {
@@ -29,7 +32,9 @@ Renderer::Renderer()
       m_pixels(0), m_width(240), m_height(320), m_depth(0),
       m_camCosYaw(1.0f), m_camSinYaw(0.0f),
       m_camCosPitch(1.0f), m_camSinPitch(0.0f),
-      m_projScaleX(1.0f), m_projScaleY(1.0f)
+      m_projScaleX(1.0f), m_projScaleY(1.0f),
+      m_cachedYaw(0.0f), m_cachedPitch(0.0f),
+      m_cameraCacheValid(false)
 {
 }
 
@@ -153,75 +158,85 @@ void Renderer::DrawTriangle(float x0, float y0, float z0,
                             float x2, float y2, float z2,
                             DWORD color)
 {
-    float minxf, maxxf, minyf, maxyf;
+    int fx0 = (int)(x0 * (float)FP_ONE);
+    int fy0 = (int)(y0 * (float)FP_ONE);
+    int fx1 = (int)(x1 * (float)FP_ONE);
+    int fy1 = (int)(y1 * (float)FP_ONE);
+    int fx2 = (int)(x2 * (float)FP_ONE);
+    int fy2 = (int)(y2 * (float)FP_ONE);
+
     int minX, maxX, minY, maxY;
-    float area;
-    float e0row, e1row, e2row;
-    float e0step, e1step, e2step;
-    float e0down, e1down, e2down;
-    float dzdx, dzdy;
-    float zrow, zcur;
-    int z0i;
-    int z1i;
-    int z2i;
+    long area;
+    long e0row, e1row, e2row;
+    long e0step, e1step, e2step;
+    long e0down, e1down, e2down;
+    float dzdx, dzdy, zrow;
+    int z0i, z1i, z2i;
     int x, y;
-    DWORD* pixels;
-    unsigned short* depth;
+    DWORD* pixels = (DWORD*)m_pixels;
+    unsigned short* depth = m_depth;
 
-    minxf = x0;
-    maxxf = x0;
-    minyf = y0;
-    maxyf = y0;
+    /* Integer bounding box: no floor()/ceil() in the hot path. */
+    minX = fx0;
+    maxX = fx0;
+    minY = fy0;
+    maxY = fy0;
+    if (fx1 < minX) minX = fx1;
+    if (fx2 < minX) minX = fx2;
+    if (fx1 > maxX) maxX = fx1;
+    if (fx2 > maxX) maxX = fx2;
+    if (fy1 < minY) minY = fy1;
+    if (fy2 < minY) minY = fy2;
+    if (fy1 > maxY) maxY = fy1;
+    if (fy2 > maxY) maxY = fy2;
 
-    if (x1 < minxf) minxf = x1;
-    if (x2 < minxf) minxf = x2;
-    if (x1 > maxxf) maxxf = x1;
-    if (x2 > maxxf) maxxf = x2;
+    /* Convert fixed-point bounds to pixel bounds. */
+    minX = minX >> FP_SHIFT;
+    maxX = (maxX + FP_ONE - 1) >> FP_SHIFT;
+    minY = minY >> FP_SHIFT;
+    maxY = (maxY + FP_ONE - 1) >> FP_SHIFT;
 
-    if (y1 < minyf) minyf = y1;
-    if (y2 < minyf) minyf = y2;
-    if (y1 > maxyf) maxyf = y1;
-    if (y2 > maxyf) maxyf = y2;
-
-    minX = ClampInt((int)floor(minxf), 0, m_width - 1);
-    maxX = ClampInt((int)ceil(maxxf), 0, m_width - 1);
-    minY = ClampInt((int)floor(minyf), 0, m_height - 1);
-    maxY = ClampInt((int)ceil(maxyf), 0, m_height - 1);
+    if (minX < 0) minX = 0;
+    if (minY < 0) minY = 0;
+    if (maxX >= m_width) maxX = m_width - 1;
+    if (maxY >= m_height) maxY = m_height - 1;
 
     if (minX > maxX || minY > maxY)
         return;
 
-    area = (x1 - x0) * (y2 - y0) -
-           (y1 - y0) * (x2 - x0);
+    /*
+     * Edge functions are kept in 12.12 fixed point.
+     * The per-pixel loop now uses only integer additions/comparisons
+     * for coverage instead of three floating-point edge equations.
+     */
+    area = (long)(fx1 - fx0) * (long)(fy2 - fy0) -
+           (long)(fy1 - fy0) * (long)(fx2 - fx0);
 
-    if (area > -0.001f && area < 0.001f)
+    if (area > -1 || area < 1)
         return;
 
-    /*
-     * Edge equations are calculated once per triangle.
-     * After that every pixel only performs additions/comparisons.
-     */
-    e0step = -(y1 - y0);
-    e1step = -(y2 - y1);
-    e2step = -(y0 - y2);
+    e0step = -(long)(fy1 - fy0);
+    e1step = -(long)(fy2 - fy1);
+    e2step = -(long)(fy0 - fy2);
 
-    e0down = (x1 - x0);
-    e1down = (x2 - x1);
-    e2down = (x0 - x2);
-
-    e0row = e0step * ((float)minX + 0.5f - x0) +
-            e0down * ((float)minY + 0.5f - y0);
-
-    e1row = e1step * ((float)minX + 0.5f - x1) +
-            e1down * ((float)minY + 0.5f - y1);
-
-    e2row = e2step * ((float)minX + 0.5f - x2) +
-            e2down * ((float)minY + 0.5f - y2);
+    e0down = (long)(fx1 - fx0);
+    e1down = (long)(fx2 - fx1);
+    e2down = (long)(fx0 - fx2);
 
     /*
-     * Make the inside test independent of triangle winding.
+     * Evaluate edges at the first pixel center. Using fixed-point
+     * coordinates avoids repeated float arithmetic in every pixel.
      */
-    if (area < 0.0f) {
+    {
+        long px = ((long)minX << FP_SHIFT) + (FP_ONE >> 1);
+        long py = ((long)minY << FP_SHIFT) + (FP_ONE >> 1);
+
+        e0row = e0step * (px - fx0) + e0down * (py - fy0);
+        e1row = e1step * (px - fx1) + e1down * (py - fy1);
+        e2row = e2step * (px - fx2) + e2down * (py - fy2);
+    }
+
+    if (area < 0) {
         e0row = -e0row;
         e1row = -e1row;
         e2row = -e2row;
@@ -231,38 +246,41 @@ void Renderer::DrawTriangle(float x0, float y0, float z0,
         e0down = -e0down;
         e1down = -e1down;
         e2down = -e2down;
+        area = -area;
     }
 
     z0i = ClampInt((int)((z0 / FAR_Z) * 65534.0f), 0, 65534);
     z1i = ClampInt((int)((z1 / FAR_Z) * 65534.0f), 0, 65534);
     z2i = ClampInt((int)((z2 / FAR_Z) * 65534.0f), 0, 65534);
 
-    /*
-     * Depth plane is calculated once. Per pixel only adds dzdx.
-     */
-    dzdx = ((float)(z1i - z0i) * (y2 - y0) -
-            (float)(z2i - z0i) * (y1 - y0)) / area;
+    /* Depth setup is done once per triangle; pixels only add dzdx. */
+    {
+        float screenArea = (x1 - x0) * (y2 - y0) -
+                           (y1 - y0) * (x2 - x0);
 
-    dzdy = ((x1 - x0) * (float)(z2i - z0i) -
-            (x2 - x0) * (float)(z1i - z0i)) / area;
+        dzdx = ((float)(z1i - z0i) * (y2 - y0) -
+                (float)(z2i - z0i) * (y1 - y0)) / screenArea;
 
-    zrow = (float)z0i +
-           dzdx * ((float)minX + 0.5f - x0) +
-           dzdy * ((float)minY + 0.5f - y0);
+        dzdy = ((x1 - x0) * (float)(z2i - z0i) -
+                (x2 - x0) * (float)(z1i - z0i)) / screenArea;
 
-    pixels = (DWORD*)m_pixels;
-    depth = m_depth;
+        zrow = (float)z0i +
+               dzdx * ((float)minX + 0.5f - x0) +
+               dzdy * ((float)minY + 0.5f - y0);
+    }
 
     for (y = minY; y <= maxY; ++y) {
-        float e0 = e0row;
-        float e1 = e1row;
-        float e2 = e2row;
-        zcur = zrow;
+        long e0 = e0row;
+        long e1 = e1row;
+        long e2 = e2row;
+        float zcur = zrow;
         int index = y * m_width + minX;
 
         for (x = minX; x <= maxX; ++x) {
-            if (e0 >= 0.0f && e1 >= 0.0f && e2 >= 0.0f) {
-                int zz = ClampInt((int)zcur, 0, 65534);
+            if (e0 >= 0 && e1 >= 0 && e2 >= 0) {
+                int zz = (int)zcur;
+                if (zz < 0) zz = 0;
+                if (zz > 65534) zz = 65534;
 
                 if (zz < (int)depth[index]) {
                     depth[index] = (unsigned short)zz;
@@ -362,6 +380,14 @@ void Renderer::DrawTerrain(const Terrain& t, const Camera& c)
             if (x < 0 || x >= WORLD_SIZE)
                 continue;
 
+            /* Skip the square's corners: a circular view covers fewer columns. */
+            {
+                int dx = x - cx;
+                int dz = z - cz;
+                if (dx * dx + dz * dz > TERRAIN_RADIUS2)
+                    continue;
+            }
+
             h = t.GetHeight(x, z);
             l = (x > 0) ? t.GetHeight(x - 1, z) : h;
             rr = (x < WORLD_SIZE - 1) ? t.GetHeight(x + 1, z) : h;
@@ -420,15 +446,23 @@ void Renderer::Render(const Terrain& t, const Camera& c)
         return;
 
     /* Calculate camera trig exactly once per frame. */
-    m_camCosYaw = (float)cos(c.yaw);
-    m_camSinYaw = (float)sin(c.yaw);
-    m_camCosPitch = (float)cos(c.pitch);
-    m_camSinPitch = (float)sin(c.pitch);
+    if (!m_cameraCacheValid || c.yaw != m_cachedYaw || c.pitch != m_cachedPitch) {
+        m_camCosYaw = (float)cos(c.yaw);
+        m_camSinYaw = (float)sin(c.yaw);
+        m_camCosPitch = (float)cos(c.pitch);
+        m_camSinPitch = (float)sin(c.pitch);
+        m_cachedYaw = c.yaw;
+        m_cachedPitch = c.pitch;
+        m_cameraCacheValid = true;
+    }
 
-    halfFovTan = (float)tan(FOV * 0.5f);
-    aspect = (float)m_width / (float)m_height;
-    m_projScaleX = ((float)m_width * 0.5f) / (halfFovTan * aspect);
-    m_projScaleY = ((float)m_height * 0.5f) / halfFovTan;
+    /* FOV/aspect never change after Initialize(), so do this only once. */
+    if (m_projScaleX == 1.0f && m_projScaleY == 1.0f) {
+        halfFovTan = (float)tan(FOV * 0.5f);
+        aspect = (float)m_width / (float)m_height;
+        m_projScaleX = ((float)m_width * 0.5f) / (halfFovTan * aspect);
+        m_projScaleY = ((float)m_height * 0.5f) / halfFovTan;
+    }
 
     Clear(Color(115, 185, 235));
     DrawTerrain(t, c);
