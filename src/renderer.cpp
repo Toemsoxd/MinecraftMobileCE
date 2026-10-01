@@ -97,12 +97,6 @@ bool Renderer::Initialize(HWND hwnd, int width, int height)
         return false;
     }
 
-    hr = m_dd->SetDisplayMode(width, height, 16);
-    if (FAILED(hr)) {
-        Shutdown();
-        return false;
-    }
-
     ZeroMemory(&desc, sizeof(desc));
     desc.dwSize = sizeof(desc);
     desc.dwFlags = DDSD_CAPS;
