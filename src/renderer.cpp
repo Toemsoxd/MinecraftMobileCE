@@ -12,9 +12,11 @@ static const int TERRAIN_RADIUS2 = TERRAIN_RADIUS * TERRAIN_RADIUS;
 static const int FP_SHIFT = 7;
 static const int FP_ONE = 1 << FP_SHIFT;
 
-static DWORD Color(unsigned char r, unsigned char g, unsigned char b)
+static WORD Color(unsigned char r, unsigned char g, unsigned char b)
 {
-        return ((DWORD)b) | ((DWORD)g << 8) | ((DWORD)r << 16);
+    return (WORD)((((WORD)r >> 3) << 11) |
+                  (((WORD)g >> 2) << 5) |
+                  ((WORD)b >> 3));
 }
 
 static int ClampInt(int v, int lo, int hi)
