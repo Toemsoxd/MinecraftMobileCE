@@ -242,8 +242,8 @@ bool Renderer::Project(float x, float y, float z,
     vy = dy;
 
     ux = vx;
-    uy = vy * cp - vz * sp;
-    uz = vy * sp + vz * cp;
+    uy = vy * cp + vz * sp;
+    uz = -vy * sp + vz * cp;
 
     if (uz <= NEAR_Z)
         return false;
