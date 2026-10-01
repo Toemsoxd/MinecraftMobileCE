@@ -39,34 +39,88 @@ static void EditInFront(bool place)
         g_terrain.RemoveBlockColumn(tx, tz);
 }
 
+static bool g_prevSpace = false;
+static float g_verticalVelocity = 0.0f;
+static bool g_grounded = false;
+
+static float GroundY()
+{
+    int x = (int)g_camera.x;
+    int z = (int)g_camera.z;
+
+    if (x < 0) x = 0;
+    if (x >= WORLD_SIZE) x = WORLD_SIZE - 1;
+    if (z < 0) z = 0;
+    if (z >= WORLD_SIZE) z = WORLD_SIZE - 1;
+
+    return (float)g_terrain.GetHeight(x, z) + 1.60f;
+}
+
 static void Update(float dt)
 {
-    const float speed = 12.0f;
+    const float speed = 5.0f;
     const float turn = 1.8f;
+    const float gravity = 14.0f;
+    const float jumpSpeed = 6.0f;
+    const float eyeHeight = 1.60f;
     float forward = 0.0f;
     float strafe = 0.0f;
+    float sy;
+    float cy;
 
     if (Down('0')) forward += 1.0f;
     if (Down('*')) forward -= 1.0f;
     if (Down('4')) strafe += 1.0f;
     if (Down('A')) strafe -= 1.0f;
 
+    sy = (float)sin(g_camera.yaw);
+    cy = (float)cos(g_camera.yaw);
+
     if (forward != 0.0f || strafe != 0.0f) {
         float len = (float)sqrt(forward * forward + strafe * strafe);
+        float f = forward / len;
+        float s = strafe / len;
+        float nx = g_camera.x + (sy * f + cy * s) * speed * dt;
+        float nz = g_camera.z + (cy * f - sy * s) * speed * dt;
+        int tx;
+        int tz;
+        float currentGround;
+        float nextGround;
 
-        if (len > 0.0f) {
-            float f = forward / len;
-            float s = strafe / len;
-            float sy = (float)sin(g_camera.yaw);
-            float cy = (float)cos(g_camera.yaw);
+        if (nx < 1.0f) nx = 1.0f;
+        if (nz < 1.0f) nz = 1.0f;
+        if (nx > WORLD_SIZE - 2) nx = WORLD_SIZE - 2;
+        if (nz > WORLD_SIZE - 2) nz = WORLD_SIZE - 2;
 
-            g_camera.x += (sy * f + cy * s) * speed * dt;
-            g_camera.z += (cy * f - sy * s) * speed * dt;
+        tx = (int)nx;
+        tz = (int)nz;
+        currentGround = g_camera.y - eyeHeight;
+        nextGround = (float)g_terrain.GetHeight(tx, tz);
+
+        /* Allow normal one-block steps, but don't walk through cliffs. */
+        if (nextGround <= currentGround + 1.05f) {
+            g_camera.x = nx;
+            g_camera.z = nz;
         }
     }
 
-    if (Down(VK_SPACE))
-        g_camera.y += speed * dt;
+    if (Pressed(VK_SPACE, &g_prevSpace) && g_grounded)
+        g_verticalVelocity = jumpSpeed;
+
+    g_verticalVelocity -= gravity * dt;
+    g_camera.y += g_verticalVelocity * dt;
+
+    {
+        float floorY = GroundY();
+
+        if (g_camera.y <= floorY) {
+            g_camera.y = floorY;
+            g_verticalVelocity = 0.0f;
+            g_grounded = true;
+        } else {
+            g_grounded = false;
+        }
+    }
 
     if (Down(VK_LEFT))  g_camera.yaw -= turn * dt;
     if (Down(VK_RIGHT)) g_camera.yaw += turn * dt;
@@ -90,16 +144,8 @@ static void Update(float dt)
 
     if (g_camera.pitch > 1.45f) g_camera.pitch = 1.45f;
     if (g_camera.pitch < -1.45f) g_camera.pitch = -1.45f;
-
-    if (g_camera.x < 1) g_camera.x = 1;
-    if (g_camera.z < 1) g_camera.z = 1;
-    if (g_camera.x > WORLD_SIZE - 2) g_camera.x = WORLD_SIZE - 2;
-    if (g_camera.z > WORLD_SIZE - 2) g_camera.z = WORLD_SIZE - 2;
-
-    if (g_camera.y < 2) g_camera.y = 2;
-    if (g_camera.y > WORLD_MAX_HEIGHT - 2)
-        g_camera.y = WORLD_MAX_HEIGHT - 2;
 }
+
 
 static LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
@@ -134,7 +180,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPTSTR cmd, int show)
 
     hwnd = CreateWindow(TEXT("MinecraftMobileCE"),
                         TEXT("MinecraftMobileCE"),
-                        WS_POPUP, 0, 0, 240, 320,
+                        WS_POPUP, 0, 0, 320, 240,
                         0, 0, hi, 0);
 
     if (!hwnd)
@@ -146,12 +192,12 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPTSTR cmd, int show)
     g_terrain.Generate(0xCE042001UL);
 
     g_camera.x = 128;
-    g_camera.y = 60;
+    g_camera.y = (float)g_terrain.GetHeight(128, 128) + 1.60f;
     g_camera.z = 128;
     g_camera.yaw = 0;
     g_camera.pitch = 0.65f;
 
-    if (!g_renderer.Initialize(hwnd, 240, 320)) {
+    if (!g_renderer.Initialize(hwnd, 320, 240)) {
         MessageBox(hwnd,
                    TEXT("Software renderer initialization failed."),
                    TEXT("MinecraftMobileCE"),
