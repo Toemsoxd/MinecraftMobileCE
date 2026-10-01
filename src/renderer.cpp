@@ -264,13 +264,11 @@ bool Renderer::Project(float x, float y, float z,
     return true;
 }
 
-static void AddQuad(Renderer* r,
-                    float x0, float y0, float z0,
-                    float x1, float y1, float z1,
-                    float x2, float y2, float z2,
-                    float x3, float y3, float z3,
-                    DWORD color,
-                    const Camera& c)
+void Renderer::AddQuad(float x0, float y0, float z0,
+                       float x1, float y1, float z1,
+                       float x2, float y2, float z2,
+                       float x3, float y3, float z3,
+                       DWORD color, const Camera& c)
 {
     float sx0, sy0, sz0;
     float sx1, sy1, sz1;
@@ -278,18 +276,18 @@ static void AddQuad(Renderer* r,
     float sx3, sy3, sz3;
     bool p0, p1, p2, p3;
 
-    p0 = r->Project(x0, y0, z0, c, &sx0, &sy0, &sz0);
-    p1 = r->Project(x1, y1, z1, c, &sx1, &sy1, &sz1);
-    p2 = r->Project(x2, y2, z2, c, &sx2, &sy2, &sz2);
-    p3 = r->Project(x3, y3, z3, c, &sx3, &sy3, &sz3);
+    p0 = Project(x0, y0, z0, c, &sx0, &sy0, &sz0);
+    p1 = Project(x1, y1, z1, c, &sx1, &sy1, &sz1);
+    p2 = Project(x2, y2, z2, c, &sx2, &sy2, &sz2);
+    p3 = Project(x3, y3, z3, c, &sx3, &sy3, &sz3);
 
     if (p0 && p1 && p2)
-        r->DrawTriangle(sx0, sy0, sz0, sx1, sy1, sz1,
-                        sx2, sy2, sz2, color);
+        DrawTriangle(sx0, sy0, sz0, sx1, sy1, sz1,
+                     sx2, sy2, sz2, color);
 
     if (p0 && p2 && p3)
-        r->DrawTriangle(sx0, sy0, sz0, sx2, sy2, sz2,
-                        sx3, sy3, sz3, color);
+        DrawTriangle(sx0, sy0, sz0, sx2, sy2, sz2,
+                     sx3, sy3, sz3, color);
 }
 
 void Renderer::DrawTerrain(const Terrain& t, const Camera& c)
@@ -326,7 +324,7 @@ void Renderer::DrawTerrain(const Terrain& t, const Camera& c)
             f = (z > 0) ? t.GetHeight(x, z - 1) : h;
             b = (z < WORLD_SIZE - 1) ? t.GetHeight(x, z + 1) : h;
 
-            AddQuad(this,
+            AddQuad(
                     (float)x, (float)h, (float)z,
                     (float)x + 1.0f, (float)h, (float)z,
                     (float)x + 1.0f, (float)h, (float)z + 1.0f,
@@ -334,7 +332,7 @@ void Renderer::DrawTerrain(const Terrain& t, const Camera& c)
                     grass, c);
 
             if (l < h)
-                AddQuad(this,
+                AddQuad(
                         (float)x, (float)l, (float)z,
                         (float)x, (float)h, (float)z,
                         (float)x, (float)h, (float)z + 1.0f,
@@ -342,7 +340,7 @@ void Renderer::DrawTerrain(const Terrain& t, const Camera& c)
                         side1, c);
 
             if (rr < h)
-                AddQuad(this,
+                AddQuad(
                         (float)x + 1.0f, (float)l, (float)z + 1.0f,
                         (float)x + 1.0f, (float)h, (float)z + 1.0f,
                         (float)x + 1.0f, (float)h, (float)z,
@@ -350,7 +348,7 @@ void Renderer::DrawTerrain(const Terrain& t, const Camera& c)
                         side2, c);
 
             if (f < h)
-                AddQuad(this,
+                AddQuad(
                         (float)x, (float)f, (float)z,
                         (float)x + 1.0f, (float)f, (float)z,
                         (float)x + 1.0f, (float)h, (float)z,
@@ -358,7 +356,7 @@ void Renderer::DrawTerrain(const Terrain& t, const Camera& c)
                         side3, c);
 
             if (b < h)
-                AddQuad(this,
+                AddQuad(
                         (float)x + 1.0f, (float)b, (float)z + 1.0f,
                         (float)x, (float)b, (float)z + 1.0f,
                         (float)x, (float)h, (float)z + 1.0f,
