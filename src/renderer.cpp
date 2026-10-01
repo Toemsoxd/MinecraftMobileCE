@@ -153,144 +153,134 @@ void Renderer::DrawTriangle(float x0, float y0, float z0,
                             float x2, float y2, float z2,
                             DWORD color)
 {
-    int X0, Y0, X1, Y1, X2, Y2;
+    float minxf, maxxf, minyf, maxyf;
     int minX, maxX, minY, maxY;
-    long long area;
-    long long A0, B0, C0;
-    long long A1, B1, C1;
-    long long A2, B2, C2;
+    float area;
+    float e0row, e1row, e2row;
+    float e0step, e1step, e2step;
+    float e0down, e1down, e2down;
     float dzdx, dzdy;
-    int Z0, Z1, Z2;
-    int zStart;
-    int dzdxI, dzdyI;
+    float zrow, zcur;
+    int z0i;
+    int z1i;
+    int z2i;
     int x, y;
     DWORD* pixels;
     unsigned short* depth;
 
-    X0 = (int)(x0 * (float)FP_ONE);
-    Y0 = (int)(y0 * (float)FP_ONE);
-    X1 = (int)(x1 * (float)FP_ONE);
-    Y1 = (int)(y1 * (float)FP_ONE);
-    X2 = (int)(x2 * (float)FP_ONE);
-    Y2 = (int)(y2 * (float)FP_ONE);
+    minxf = x0;
+    maxxf = x0;
+    minyf = y0;
+    maxyf = y0;
 
-    {
-        float minxf = x0;
-        float maxxf = x0;
-        float minyf = y0;
-        float maxyf = y0;
+    if (x1 < minxf) minxf = x1;
+    if (x2 < minxf) minxf = x2;
+    if (x1 > maxxf) maxxf = x1;
+    if (x2 > maxxf) maxxf = x2;
 
-        if (x1 < minxf) minxf = x1;
-        if (x2 < minxf) minxf = x2;
-        if (x1 > maxxf) maxxf = x1;
-        if (x2 > maxxf) maxxf = x2;
+    if (y1 < minyf) minyf = y1;
+    if (y2 < minyf) minyf = y2;
+    if (y1 > maxyf) maxyf = y1;
+    if (y2 > maxyf) maxyf = y2;
 
-        if (y1 < minyf) minyf = y1;
-        if (y2 < minyf) minyf = y2;
-        if (y1 > maxyf) maxyf = y1;
-        if (y2 > maxyf) maxyf = y2;
-
-        minX = ClampInt((int)floor(minxf), 0, m_width - 1);
-        maxX = ClampInt((int)ceil(maxxf), 0, m_width - 1);
-        minY = ClampInt((int)floor(minyf), 0, m_height - 1);
-        maxY = ClampInt((int)ceil(maxyf), 0, m_height - 1);
-    }
+    minX = ClampInt((int)floor(minxf), 0, m_width - 1);
+    maxX = ClampInt((int)ceil(maxxf), 0, m_width - 1);
+    minY = ClampInt((int)floor(minyf), 0, m_height - 1);
+    maxY = ClampInt((int)ceil(maxyf), 0, m_height - 1);
 
     if (minX > maxX || minY > maxY)
         return;
 
-    area = (long long)(X1 - X0) * (long long)(Y2 - Y0) -
-           (long long)(Y1 - Y0) * (long long)(X2 - X0);
+    area = (x1 - x0) * (y2 - y0) -
+           (y1 - y0) * (x2 - x0);
 
-    if (area == 0)
+    if (area > -0.001f && area < 0.001f)
         return;
 
     /*
-     * Edge equations. The sign of area is retained, so both triangle
-     * windings work without an expensive normalization step.
+     * Edge equations are calculated once per triangle.
+     * After that every pixel only performs additions/comparisons.
      */
-    A0 = (long long)(Y0 - Y1);
-    B0 = (long long)(X1 - X0);
-    C0 = -A0 * X0 - B0 * Y0;
+    e0step = -(y1 - y0);
+    e1step = -(y2 - y1);
+    e2step = -(y0 - y2);
 
-    A1 = (long long)(Y1 - Y2);
-    B1 = (long long)(X2 - X1);
-    C1 = -A1 * X1 - B1 * Y1;
+    e0down = (x1 - x0);
+    e1down = (x2 - x1);
+    e2down = (x0 - x2);
 
-    A2 = (long long)(Y2 - Y0);
-    B2 = (long long)(X0 - X2);
-    C2 = -A2 * X2 - B2 * Y2;
+    e0row = e0step * ((float)minX + 0.5f - x0) +
+            e0down * ((float)minY + 0.5f - y0);
 
-    /* Normalize all edges to the same inside-test orientation. */
-    if (area < 0) {
-        A0 = -A0; B0 = -B0; C0 = -C0;
-        A1 = -A1; B1 = -B1; C1 = -C1;
-        A2 = -A2; B2 = -B2; C2 = -C2;
-        area = -area;
+    e1row = e1step * ((float)minX + 0.5f - x1) +
+            e1down * ((float)minY + 0.5f - y1);
+
+    e2row = e2step * ((float)minX + 0.5f - x2) +
+            e2down * ((float)minY + 0.5f - y2);
+
+    /*
+     * Make the inside test independent of triangle winding.
+     */
+    if (area < 0.0f) {
+        e0row = -e0row;
+        e1row = -e1row;
+        e2row = -e2row;
+        e0step = -e0step;
+        e1step = -e1step;
+        e2step = -e2step;
+        e0down = -e0down;
+        e1down = -e1down;
+        e2down = -e2down;
     }
 
-    Z0 = ClampInt((int)((z0 / FAR_Z) * 65534.0f), 0, 65534);
-    Z1 = ClampInt((int)((z1 / FAR_Z) * 65534.0f), 0, 65534);
-    Z2 = ClampInt((int)((z2 / FAR_Z) * 65534.0f), 0, 65534);
+    z0i = ClampInt((int)((z0 / FAR_Z) * 65534.0f), 0, 65534);
+    z1i = ClampInt((int)((z1 / FAR_Z) * 65534.0f), 0, 65534);
+    z2i = ClampInt((int)((z2 / FAR_Z) * 65534.0f), 0, 65534);
 
     /*
-     * Depth plane:
-     * z(x,y) = z0 + dzdx*x + dzdy*y
-     * Calculate its slopes once per triangle, then use integer adds.
+     * Depth plane is calculated once. Per pixel only adds dzdx.
      */
-    dzdx = ((float)(Z1 - Z0) * (float)(Y2 - Y0) -
-            (float)(Z2 - Z0) * (float)(Y1 - Y0)) / (float)area;
-    dzdy = ((float)(X1 - X0) * (float)(Z2 - Z0) -
-            (float)(X2 - X0) * (float)(Z1 - Z0)) / (float)area;
+    dzdx = ((float)(z1i - z0i) * (y2 - y0) -
+            (float)(z2i - z0i) * (y1 - y0)) / area;
 
-    dzdxI = (int)(dzdx * (float)FP_ONE);
-    dzdyI = (int)(dzdy * (float)FP_ONE);
+    dzdy = ((x1 - x0) * (float)(z2i - z0i) -
+            (x2 - x0) * (float)(z1i - z0i)) / area;
 
-    /*
-     * Evaluate at pixel centers. Edge values use 16.16 coordinates,
-     * while the per-pixel step is simply A*65536 or B*65536.
-     */
-    {
-        long long fx = ((long long)minX << FP_SHIFT) + (FP_ONE >> 1);
-        long long fy = ((long long)minY << FP_SHIFT) + (FP_ONE >> 1);
-        long long e0row = A0 * fx + B0 * fy + C0;
-        long long e1row = A1 * fx + B1 * fy + C1;
-        long long e2row = A2 * fx + B2 * fy + C2;
-        int rowZ = (Z0 << FP_SHIFT) +
-                   (int)(((long long)dzdxI * (minX * FP_ONE - X0) +
-                          (long long)dzdyI * (minY * FP_ONE - Y0)) >> FP_SHIFT);
+    zrow = (float)z0i +
+           dzdx * ((float)minX + 0.5f - x0) +
+           dzdy * ((float)minY + 0.5f - y0);
 
-        pixels = (DWORD*)m_pixels;
-        depth = m_depth;
+    pixels = (DWORD*)m_pixels;
+    depth = m_depth;
 
-        for (y = minY; y <= maxY; ++y) {
-            long long e0 = e0row;
-            long long e1 = e1row;
-            long long e2 = e2row;
-            int zcur = rowZ;
-            int index = y * m_width + minX;
+    for (y = minY; y <= maxY; ++y) {
+        float e0 = e0row;
+        float e1 = e1row;
+        float e2 = e2row;
+        zcur = zrow;
+        int index = y * m_width + minX;
 
-            for (x = minX; x <= maxX; ++x) {
-                if (e0 >= 0 && e1 >= 0 && e2 >= 0) {
-                    int zz = ClampInt(zcur >> FP_SHIFT, 0, 65534);
-                    if (zz < (int)depth[index]) {
-                        depth[index] = (unsigned short)zz;
-                        pixels[index] = color;
-                    }
+        for (x = minX; x <= maxX; ++x) {
+            if (e0 >= 0.0f && e1 >= 0.0f && e2 >= 0.0f) {
+                int zz = ClampInt((int)zcur, 0, 65534);
+
+                if (zz < (int)depth[index]) {
+                    depth[index] = (unsigned short)zz;
+                    pixels[index] = color;
                 }
-
-                e0 += A0 * FP_ONE;
-                e1 += A1 * FP_ONE;
-                e2 += A2 * FP_ONE;
-                zcur += dzdxI;
-                ++index;
             }
 
-            e0row += B0 * FP_ONE;
-            e1row += B1 * FP_ONE;
-            e2row += B2 * FP_ONE;
-            rowZ += dzdyI;
+            e0 += e0step;
+            e1 += e1step;
+            e2 += e2step;
+            zcur += dzdx;
+            ++index;
         }
+
+        e0row += e0down;
+        e1row += e1down;
+        e2row += e2down;
+        zrow += dzdy;
     }
 }
 
