@@ -54,6 +54,7 @@ bool Renderer::CreateFramebuffer()
 {
     BITMAPINFO bi;
     HDC screen;
+    DWORD* masks;
 
     m_dc = 0;
     m_bitmap = 0;
@@ -76,8 +77,13 @@ bool Renderer::CreateFramebuffer()
     bi.bmiHeader.biWidth = m_width;
     bi.bmiHeader.biHeight = -m_height;
     bi.bmiHeader.biPlanes = 1;
-    bi.bmiHeader.biBitCount = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
+    bi.bmiHeader.biBitCount = 16;
+    bi.bmiHeader.biCompression = BI_BITFIELDS;
+
+    masks = (DWORD*)bi.bmiColors;
+    masks[0] = 0xF800;
+    masks[1] = 0x07E0;
+    masks[2] = 0x001F;
 
     m_bitmap = CreateDIBSection(m_dc, &bi, DIB_RGB_COLORS,
                                 &m_pixels, 0, 0);
@@ -128,18 +134,18 @@ void Renderer::Shutdown()
 
 void Renderer::Clear(DWORD color)
 {
-    DWORD* pixels;
+    WORD* pixels;
     int count;
     int i;
 
     if (!m_pixels || !m_depth)
         return;
 
-    pixels = (DWORD*)m_pixels;
+    pixels = (WORD*)m_pixels;
     count = m_width * m_height;
 
     for (i = 0; i < count; ++i) {
-        pixels[i] = color;
+        pixels[i] = (WORD)color;
         m_depth[i] = 65535;
     }
 }
@@ -309,30 +315,129 @@ bool Renderer::Project(float x, float y, float z,
     return true;
 }
 
+
+typedef struct ClipVertex {
+    float x;
+    float y;
+    float z;
+} ClipVertex;
+
+static ClipVertex MakeViewVertex(float x, float y, float z,
+                                 const Camera& c,
+                                 float cosYaw, float sinYaw,
+                                 float cosPitch, float sinPitch)
+{
+    ClipVertex v;
+    float dx = x - c.x;
+    float dy = y - c.y;
+    float dz = z - c.z;
+    float vx = dx * cosYaw - dz * sinYaw;
+    float vz = dx * sinYaw + dz * cosYaw;
+
+    v.x = vx;
+    v.y = dy * cosPitch + vz * sinPitch;
+    v.z = -dy * sinPitch + vz * cosPitch;
+    return v;
+}
+
+static ClipVertex LerpClipVertex(const ClipVertex& a,
+                                 const ClipVertex& b,
+                                 float t)
+{
+    ClipVertex v;
+    v.x = a.x + (b.x - a.x) * t;
+    v.y = a.y + (b.y - a.y) * t;
+    v.z = a.z + (b.z - a.z) * t;
+    return v;
+}
+
+void Renderer::DrawClippedTriangle(float x0, float y0, float z0,
+                                   float x1, float y1, float z1,
+                                   float x2, float y2, float z2,
+                                   DWORD color, const Camera& c)
+{
+    ClipVertex in[8];
+    ClipVertex out[8];
+    int count = 3;
+    int plane;
+    int i;
+
+    in[0] = MakeViewVertex(x0, y0, z0, c,
+                           m_camCosYaw, m_camSinYaw,
+                           m_camCosPitch, m_camSinPitch);
+    in[1] = MakeViewVertex(x1, y1, z1, c,
+                           m_camCosYaw, m_camSinYaw,
+                           m_camCosPitch, m_camSinPitch);
+    in[2] = MakeViewVertex(x2, y2, z2, c,
+                           m_camCosYaw, m_camSinYaw,
+                           m_camCosPitch, m_camSinPitch);
+
+    /* Sutherland-Hodgman clipping against near and far Z planes. */
+    for (plane = 0; plane < 2; ++plane) {
+        int outCount = 0;
+
+        for (i = 0; i < count; ++i) {
+            ClipVertex a = in[i];
+            ClipVertex b = in[(i + 1) % count];
+            float da = (plane == 0) ? (a.z - NEAR_Z) : (FAR_Z - a.z);
+            float db = (plane == 0) ? (b.z - NEAR_Z) : (FAR_Z - b.z);
+            bool aInside = da >= 0.0f;
+            bool bInside = db >= 0.0f;
+
+            if (aInside && bInside) {
+                out[outCount++] = b;
+            } else if (aInside && !bInside) {
+                float denom = da - db;
+                if (denom != 0.0f)
+                    out[outCount++] = LerpClipVertex(a, b, da / denom);
+            } else if (!aInside && bInside) {
+                float denom = db - da;
+                if (denom != 0.0f)
+                    out[outCount++] = LerpClipVertex(a, b, da / denom);
+                out[outCount++] = b;
+            }
+        }
+
+        count = outCount;
+        for (i = 0; i < count; ++i)
+            in[i] = out[i];
+
+        if (count < 3)
+            return;
+    }
+
+    /* Project the clipped polygon and fan-triangulate it. */
+    for (i = 1; i < count - 1; ++i) {
+        float sx0 = (float)m_width * 0.5f +
+                    in[0].x * m_projScaleX / in[0].z;
+        float sy0 = (float)m_height * 0.5f -
+                    in[0].y * m_projScaleY / in[0].z;
+        float sx1 = (float)m_width * 0.5f +
+                    in[i].x * m_projScaleX / in[i].z;
+        float sy1 = (float)m_height * 0.5f -
+                    in[i].y * m_projScaleY / in[i].z;
+        float sx2 = (float)m_width * 0.5f +
+                    in[i + 1].x * m_projScaleX / in[i + 1].z;
+        float sy2 = (float)m_height * 0.5f -
+                    in[i + 1].y * m_projScaleY / in[i + 1].z;
+
+        DrawTriangle(sx0, sy0, in[0].z,
+                     sx1, sy1, in[i].z,
+                     sx2, sy2, in[i + 1].z,
+                     color);
+    }
+}
+
 void Renderer::AddQuad(float x0, float y0, float z0,
                        float x1, float y1, float z1,
                        float x2, float y2, float z2,
                        float x3, float y3, float z3,
                        DWORD color, const Camera& c)
 {
-    float sx0, sy0, sz0;
-    float sx1, sy1, sz1;
-    float sx2, sy2, sz2;
-    float sx3, sy3, sz3;
-    bool p0, p1, p2, p3;
-
-    p0 = Project(x0, y0, z0, c, &sx0, &sy0, &sz0);
-    p1 = Project(x1, y1, z1, c, &sx1, &sy1, &sz1);
-    p2 = Project(x2, y2, z2, c, &sx2, &sy2, &sz2);
-    p3 = Project(x3, y3, z3, c, &sx3, &sy3, &sz3);
-
-    if (p0 && p1 && p2)
-        DrawTriangle(sx0, sy0, sz0, sx1, sy1, sz1,
-                     sx2, sy2, sz2, color);
-
-    if (p0 && p2 && p3)
-        DrawTriangle(sx0, sy0, sz0, sx2, sy2, sz2,
-                     sx3, sy3, sz3, color);
+    DrawClippedTriangle(x0, y0, z0, x1, y1, z1,
+                        x2, y2, z2, color, c);
+    DrawClippedTriangle(x0, y0, z0, x2, y2, z2,
+                        x3, y3, z3, color, c);
 }
 
 void Renderer::DrawTerrain(const Terrain& t, const Camera& c)
@@ -449,6 +554,7 @@ void Renderer::Render(const Terrain& t, const Camera& c)
 
     screen = GetDC(m_hwnd);
     if (screen) {
+        SetStretchBltMode(screen, COLORONCOLOR);
         StretchBlt(screen, 0, 0, m_width * 2, m_height * 2,
                    m_dc, 0, 0, m_width, m_height, SRCCOPY);
         ReleaseDC(m_hwnd, screen);
