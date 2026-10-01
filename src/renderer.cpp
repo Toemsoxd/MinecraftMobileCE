@@ -7,7 +7,7 @@ static const float NEAR_Z = 0.10f;
 static const float FAR_Z = 64.0f;
 
 /* Deliberately small for the S730. Increase after profiling. */
-static const int TERRAIN_RADIUS = 9;
+static const int TERRAIN_RADIUS = 7;
 static const int TERRAIN_RADIUS2 = TERRAIN_RADIUS * TERRAIN_RADIUS;
 
 /* 12.12 is enough for our 240x320 framebuffer and keeps edge math in 32-bit. */
@@ -34,7 +34,7 @@ Renderer::Renderer()
       m_camCosPitch(1.0f), m_camSinPitch(0.0f),
       m_projScaleX(1.0f), m_projScaleY(1.0f),
       m_cachedYaw(0.0f), m_cachedPitch(0.0f),
-      m_cameraCacheValid(false)
+      m_cameraCacheValid(false), m_projectionInitialized(false)
 {
 }
 
@@ -46,8 +46,11 @@ Renderer::~Renderer()
 bool Renderer::Initialize(HWND hwnd, int width, int height)
 {
     m_hwnd = hwnd;
-    m_width = width;
-    m_height = height;
+    /* Render at 160x120, then upscale 2x to a 320x240 landscape display. */
+    m_width = width / 2;
+    m_height = height / 2;
+    m_projectionInitialized = false;
+    m_cameraCacheValid = false;
     return CreateFramebuffer();
 }
 
@@ -413,7 +416,7 @@ void Renderer::DrawTerrain(const Terrain& t, const Camera& c)
                         side1, c);
 
             if (rr < h && c.x >= (float)(x + 1))
-                AddQuad((float)x + 1.0f, (float)l, (float)z + 1.0f,
+                AddQuad((float)x + 1.0f, (float)rr, (float)z + 1.0f,
                         (float)x + 1.0f, (float)h, (float)z + 1.0f,
                         (float)x + 1.0f, (float)h, (float)z,
                         (float)x + 1.0f, (float)l, (float)z,
@@ -457,11 +460,12 @@ void Renderer::Render(const Terrain& t, const Camera& c)
     }
 
     /* FOV/aspect never change after Initialize(), so do this only once. */
-    if (m_projScaleX == 1.0f && m_projScaleY == 1.0f) {
+    if (!m_projectionInitialized) {
         halfFovTan = (float)tan(FOV * 0.5f);
         aspect = (float)m_width / (float)m_height;
         m_projScaleX = ((float)m_width * 0.5f) / (halfFovTan * aspect);
         m_projScaleY = ((float)m_height * 0.5f) / halfFovTan;
+        m_projectionInitialized = true;
     }
 
     Clear(Color(115, 185, 235));
