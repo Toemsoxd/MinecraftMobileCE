@@ -1,3 +1,4 @@
+#define INITGUID
 #include "renderer.h"
 #include <math.h>
 
