@@ -419,7 +419,7 @@ void Renderer::DrawTerrain(const Terrain& t, const Camera& c)
                 AddQuad((float)x + 1.0f, (float)rr, (float)z + 1.0f,
                         (float)x + 1.0f, (float)h, (float)z + 1.0f,
                         (float)x + 1.0f, (float)h, (float)z,
-                        (float)x + 1.0f, (float)l, (float)z,
+                        (float)x + 1.0f, (float)rr, (float)z,
                         side2, c);
 
             if (f < h && c.z <= (float)z)
