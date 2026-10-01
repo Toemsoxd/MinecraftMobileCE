@@ -1,22 +1,48 @@
 #include "renderer.h"
 #include <math.h>
 
+/*
+ * MinecraftMobileCE software renderer v2
+ *
+ * Design goals for Windows Mobile / Windows CE class hardware:
+ * - 160x120 internal framebuffer (2x presentation to 320x240)
+ * - RGB565 pixels
+ * - no GDI drawing during 3D rendering
+ * - float only for the small vertex-transform stage
+ * - integer/fixed-point triangle rasterizer
+ * - 16-bit depth buffer
+ * - tiny terrain working set
+ * - no per-frame heap allocations
+ *
+ * The DIB is only the presentation surface. All 3D work is performed
+ * by this software rasterizer.
+ */
+
 static const float PI = 3.14159265358979323846f;
 static const float FOV = 70.0f * PI / 180.0f;
-static const float NEAR_Z = 0.10f;
+static const float NEAR_Z = 0.08f;
 static const float FAR_Z = 64.0f;
 
-static const int TERRAIN_RADIUS = 7;
+static const int TERRAIN_RADIUS = 8;
 static const int TERRAIN_RADIUS2 = TERRAIN_RADIUS * TERRAIN_RADIUS;
 
-static const int FP_SHIFT = 7;
+static const int FP_SHIFT = 12;
 static const int FP_ONE = 1 << FP_SHIFT;
+static const int DEPTH_MAX = 65535;
 
-static WORD Color(unsigned char r, unsigned char g, unsigned char b)
+typedef unsigned short Pixel;
+
+struct Vertex {
+    float x;
+    float y;
+    float z;
+};
+
+static Pixel RGB565(int r, int g, int b)
 {
-    return (WORD)((((WORD)r >> 3) << 11) |
-                  (((WORD)g >> 2) << 5) |
-                  ((WORD)b >> 3));
+    return (Pixel)(((r >> 3) << 11) |
+                   ((g >> 2) << 5) |
+                   (b >> 3));
 }
 
 static int ClampInt(int v, int lo, int hi)
@@ -26,14 +52,29 @@ static int ClampInt(int v, int lo, int hi)
     return v;
 }
 
+static float Min3(float a, float b, float c)
+{
+    float v = a;
+    if (b < v) v = b;
+    if (c < v) v = c;
+    return v;
+}
+
+static float Max3(float a, float b, float c)
+{
+    float v = a;
+    if (b > v) v = b;
+    if (c > v) v = c;
+    return v;
+}
+
 Renderer::Renderer()
     : m_hwnd(0), m_dc(0), m_bitmap(0), m_oldBitmap(0),
-      m_pixels(0), m_width(240), m_height(320), m_depth(0),
+      m_pixels(0), m_width(160), m_height(120), m_depth(0),
       m_camCosYaw(1.0f), m_camSinYaw(0.0f),
       m_camCosPitch(1.0f), m_camSinPitch(0.0f),
       m_projScaleX(1.0f), m_projScaleY(1.0f),
-      m_cachedYaw(0.0f), m_cachedPitch(0.0f),
-      m_cameraCacheValid(false), m_projectionInitialized(false)
+      m_cameraCacheValid(false)
 {
 }
 
@@ -45,19 +86,29 @@ Renderer::~Renderer()
 bool Renderer::Initialize(HWND hwnd, int width, int height)
 {
     m_hwnd = hwnd;
-        m_width = width / 2;
+
+    /*
+     * The game is intentionally rendered at half resolution.
+     * Keep the internal size deterministic: this is the performance
+     * target for the S730-class device.
+     */
+    m_width = width / 2;
     m_height = height / 2;
-    m_projectionInitialized = false;
+
+    if (m_width < 1) m_width = 160;
+    if (m_height < 1) m_height = 120;
+
     m_cameraCacheValid = false;
+
     return CreateFramebuffer();
 }
 
 bool Renderer::CreateFramebuffer()
 {
-    BYTE infoBuffer[sizeof(BITMAPINFO) + (2 * sizeof(DWORD))];
+    BYTE infoBuffer[sizeof(BITMAPINFO) + 2 * sizeof(DWORD)];
     BITMAPINFO* bi;
-    HDC screen;
     DWORD* masks;
+    HDC screen;
 
     m_dc = 0;
     m_bitmap = 0;
@@ -75,8 +126,13 @@ bool Renderer::CreateFramebuffer()
     if (!m_dc)
         return false;
 
+    /*
+     * Windows CE requires BI_BITFIELDS for 16-bit non-palettized DIBs,
+     * with three color masks. RGB565 is native to our software buffer.
+     */
     bi = (BITMAPINFO*)infoBuffer;
     ZeroMemory(infoBuffer, sizeof(infoBuffer));
+
     bi->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bi->bmiHeader.biWidth = m_width;
     bi->bmiHeader.biHeight = -m_height;
@@ -91,6 +147,7 @@ bool Renderer::CreateFramebuffer()
 
     m_bitmap = CreateDIBSection(m_dc, bi, DIB_RGB_COLORS,
                                 &m_pixels, 0, 0);
+
     if (!m_bitmap || !m_pixels) {
         DestroyFramebuffer();
         return false;
@@ -104,7 +161,7 @@ bool Renderer::CreateFramebuffer()
         return false;
     }
 
-    Clear(Color(115, 185, 235));
+    Clear(RGB565(115, 185, 235));
     return true;
 }
 
@@ -136,28 +193,130 @@ void Renderer::Shutdown()
     DestroyFramebuffer();
 }
 
-void Renderer::Clear(DWORD color)
+void Renderer::Clear(Pixel color)
 {
-    WORD* pixels;
+    Pixel* pixels;
     int count;
     int i;
 
     if (!m_pixels || !m_depth)
         return;
 
-    pixels = (WORD*)m_pixels;
+    pixels = (Pixel*)m_pixels;
     count = m_width * m_height;
 
     for (i = 0; i < count; ++i) {
-        pixels[i] = (WORD)color;
-        m_depth[i] = 65535;
+        pixels[i] = color;
+        m_depth[i] = DEPTH_MAX;
+    }
+}
+
+Vertex Renderer::WorldToView(float x, float y, float z,
+                             const Camera& c) const
+{
+    Vertex v;
+    float dx = x - c.x;
+    float dy = y - c.y;
+    float dz = z - c.z;
+
+    float xz = dx * m_camCosYaw - dz * m_camSinYaw;
+    float zz = dx * m_camSinYaw + dz * m_camCosYaw;
+
+    v.x = xz;
+    v.y = dy * m_camCosPitch + zz * m_camSinPitch;
+    v.z = -dy * m_camSinPitch + zz * m_camCosPitch;
+
+    return v;
+}
+
+bool Renderer::Project(const Vertex& v, float* sx, float* sy) const
+{
+    if (v.z <= NEAR_Z || v.z > FAR_Z)
+        return false;
+
+    *sx = (float)m_width * 0.5f +
+          v.x * m_projScaleX / v.z;
+
+    *sy = (float)m_height * 0.5f -
+          v.y * m_projScaleY / v.z;
+
+    return true;
+}
+
+static Vertex ClipNear(const Vertex& a, const Vertex& b)
+{
+    Vertex v;
+    float t = (NEAR_Z - a.z) / (b.z - a.z);
+
+    v.x = a.x + (b.x - a.x) * t;
+    v.y = a.y + (b.y - a.y) * t;
+    v.z = NEAR_Z;
+    return v;
+}
+
+/*
+ * Clip one triangle against the near plane. Far clipping is unnecessary
+ * for normal terrain because the terrain working radius is small; triangles
+ * beyond FAR_Z are rejected before rasterization.
+ */
+void Renderer::DrawViewTriangle(Vertex a, Vertex b, Vertex c, Pixel color)
+{
+    bool ia = a.z >= NEAR_Z;
+    bool ib = b.z >= NEAR_Z;
+    bool ic = c.z >= NEAR_Z;
+    int inside = (ia ? 1 : 0) + (ib ? 1 : 0) + (ic ? 1 : 0);
+
+    if (inside == 0)
+        return;
+
+    if (inside == 3) {
+        float x0, y0, x1, y1, x2, y2;
+
+        if (!Project(a, &x0, &y0) ||
+            !Project(b, &x1, &y1) ||
+            !Project(c, &x2, &y2))
+            return;
+
+        DrawTriangle(x0, y0, a.z,
+                     x1, y1, b.z,
+                     x2, y2, c.z,
+                     color);
+        return;
+    }
+
+    /*
+     * A triangle clipped by one plane becomes either one or two triangles.
+     * The cases below avoid a general-purpose polygon allocator.
+     */
+    if (ia && ib && !ic) {
+        Vertex ac = ClipNear(a, c);
+        Vertex bc = ClipNear(b, c);
+        DrawViewTriangle(a, b, ac, color);
+        DrawViewTriangle(ac, b, bc, color);
+        return;
+    }
+
+    if (ia && !ib && ic) {
+        Vertex ab = ClipNear(a, b);
+        Vertex bc = ClipNear(b, c);
+        DrawViewTriangle(a, ab, c, color);
+        DrawViewTriangle(ab, bc, c, color);
+        return;
+    }
+
+    if (!ia && ib && ic) {
+        Vertex ab = ClipNear(a, b);
+        Vertex ac = ClipNear(a, c);
+        DrawViewTriangle(ab, b, c, color);
+        DrawViewTriangle(ab, c, ac, color);
+        return;
     }
 }
 
 void Renderer::DrawTriangle(float x0, float y0, float z0,
                             float x1, float y1, float z1,
                             float x2, float y2, float z2,
-                            DWORD color)
+                            Pixel color)
 {
     int fx0 = (int)(x0 * (float)FP_ONE);
     int fy0 = (int)(y0 * (float)FP_ONE);
@@ -166,34 +325,40 @@ void Renderer::DrawTriangle(float x0, float y0, float z0,
     int fx2 = (int)(x2 * (float)FP_ONE);
     int fy2 = (int)(y2 * (float)FP_ONE);
 
-    int minX, maxX, minY, maxY;
     long area;
-    long e0row, e1row, e2row;
-    long e0step, e1step, e2step;
-    long e0down, e1down, e2down;
-    float dzdx, dzdy, zrow;
-    int z0i, z1i, z2i;
+    long e0, e1, e2;
+    long e0dx, e1dx, e2dx;
+    long e0dy, e1dy, e2dy;
+
+    int minX, maxX, minY, maxY;
     int x, y;
-    WORD* pixels = (WORD*)m_pixels;
+
+    Pixel* pixels = (Pixel*)m_pixels;
     unsigned short* depth = m_depth;
 
-        minX = fx0;
+    minX = fx0;
     maxX = fx0;
     minY = fy0;
     maxY = fy0;
+
     if (fx1 < minX) minX = fx1;
     if (fx2 < minX) minX = fx2;
     if (fx1 > maxX) maxX = fx1;
     if (fx2 > maxX) maxX = fx2;
+
     if (fy1 < minY) minY = fy1;
     if (fy2 < minY) minY = fy2;
     if (fy1 > maxY) maxY = fy1;
     if (fy2 > maxY) maxY = fy2;
 
-        minX = minX >> FP_SHIFT;
+    minX >>= FP_SHIFT;
+    minY >>= FP_SHIFT;
     maxX = (maxX + FP_ONE - 1) >> FP_SHIFT;
-    minY = minY >> FP_SHIFT;
     maxY = (maxY + FP_ONE - 1) >> FP_SHIFT;
+
+    if (maxX < 0 || maxY < 0 ||
+        minX >= m_width || minY >= m_height)
+        return;
 
     if (minX < 0) minX = 0;
     if (minY < 0) minY = 0;
@@ -203,258 +368,128 @@ void Renderer::DrawTriangle(float x0, float y0, float z0,
     if (minX > maxX || minY > maxY)
         return;
 
-        area = (long)(fx1 - fx0) * (long)(fy2 - fy0) -
+    /*
+     * Screen-space backface culling. This removes triangles facing away
+     * from the camera before entering the expensive pixel loop.
+     */
+    area = (long)(fx1 - fx0) * (long)(fy2 - fy0) -
            (long)(fy1 - fy0) * (long)(fx2 - fx0);
 
-    if (area == 0)
+    if (area <= 0)
         return;
 
-    e0step = -(long)(fy1 - fy0);
-    e1step = -(long)(fy2 - fy1);
-    e2step = -(long)(fy0 - fy2);
+    /*
+     * Edge functions. One increment per pixel; no multiplication inside
+     * the inner raster loop.
+     */
+    e0dx = -(long)(fy1 - fy0);
+    e1dx = -(long)(fy2 - fy1);
+    e2dx = -(long)(fy0 - fy2);
 
-    e0down = (long)(fx1 - fx0);
-    e1down = (long)(fx2 - fx1);
-    e2down = (long)(fx0 - fx2);
+    e0dy = (long)(fx1 - fx0);
+    e1dy = (long)(fx2 - fx1);
+    e2dy = (long)(fx0 - fx2);
 
-        {
+    {
         long px = ((long)minX << FP_SHIFT) + (FP_ONE >> 1);
         long py = ((long)minY << FP_SHIFT) + (FP_ONE >> 1);
 
-        e0row = e0step * (px - fx0) + e0down * (py - fy0);
-        e1row = e1step * (px - fx1) + e1down * (py - fy1);
-        e2row = e2step * (px - fx2) + e2down * (py - fy2);
+        e0 = e0dx * (px - fx0) + e0dy * (py - fy0);
+        e1 = e1dx * (px - fx1) + e1dy * (py - fy1);
+        e2 = e2dx * (px - fx2) + e2dy * (py - fy2);
     }
 
-    if (area < 0) {
-        e0row = -e0row;
-        e1row = -e1row;
-        e2row = -e2row;
-        e0step = -e0step;
-        e1step = -e1step;
-        e2step = -e2step;
-        e0down = -e0down;
-        e1down = -e1down;
-        e2down = -e2down;
-        area = -area;
-    }
+    /*
+     * Depth interpolation is affine in screen space. At this low internal
+     * resolution this is sufficient and avoids a reciprocal per pixel.
+     */
+    {
+        int z0i = ClampInt((int)(z0 * (65534.0f / FAR_Z)), 0, 65534);
+        int z1i = ClampInt((int)(z1 * (65534.0f / FAR_Z)), 0, 65534);
+        int z2i = ClampInt((int)(z2 * (65534.0f / FAR_Z)), 0, 65534);
 
-    z0i = ClampInt((int)((z0 / FAR_Z) * 65534.0f), 0, 65534);
-    z1i = ClampInt((int)((z1 / FAR_Z) * 65534.0f), 0, 65534);
-    z2i = ClampInt((int)((z2 / FAR_Z) * 65534.0f), 0, 65534);
+        long dzdxFixed;
+        long dzdyFixed;
+        long zFixed;
+        long det = area;
+
+        /*
+         * z is kept in 16.16 fixed point for the pixel loop.
+         * Compute derivatives using the same screen-space determinant.
+         */
+        dzdxFixed =
+            (((long)(z1i - z0i) * (long)(fy2 - fy0) -
+              (long)(z2i - z0i) * (long)(fy1 - fy0)) << FP_SHIFT)
+            / det;
+
+        dzdyFixed =
+            (((long)(fx1 - fx0) * (long)(z2i - z0i) -
+              (long)(fx2 - fx0) * (long)(z1i - z0i)) << FP_SHIFT)
+            / det;
 
         {
-        float screenArea = (x1 - x0) * (y2 - y0) -
-                           (y1 - y0) * (x2 - x0);
+            long px = ((long)minX << FP_SHIFT) + (FP_ONE >> 1);
+            long py = ((long)minY << FP_SHIFT) + (FP_ONE >> 1);
 
-        dzdx = ((float)(z1i - z0i) * (y2 - y0) -
-                (float)(z2i - z0i) * (y1 - y0)) / screenArea;
+            zFixed = ((long)z0i << FP_SHIFT) +
+                     dzdxFixed * (px - fx0) / FP_ONE +
+                     dzdyFixed * (py - fy0) / FP_ONE;
+        }
 
-        dzdy = ((x1 - x0) * (float)(z2i - z0i) -
-                (x2 - x0) * (float)(z1i - z0i)) / screenArea;
+        for (y = minY; y <= maxY; ++y) {
+            long rowE0 = e0;
+            long rowE1 = e1;
+            long rowE2 = e2;
+            long rowZ = zFixed;
+            int index = y * m_width + minX;
 
-        zrow = (float)z0i +
-               dzdx * ((float)minX + 0.5f - x0) +
-               dzdy * ((float)minY + 0.5f - y0);
-    }
+            for (x = minX; x <= maxX; ++x) {
+                if (rowE0 >= 0 && rowE1 >= 0 && rowE2 >= 0) {
+                    int z = (int)(rowZ >> FP_SHIFT);
 
-    for (y = minY; y <= maxY; ++y) {
-        long e0 = e0row;
-        long e1 = e1row;
-        long e2 = e2row;
-        float zcur = zrow;
-        int index = y * m_width + minX;
+                    if (z < 0) z = 0;
+                    if (z >= DEPTH_MAX) z = DEPTH_MAX - 1;
 
-        for (x = minX; x <= maxX; ++x) {
-            if (e0 >= 0 && e1 >= 0 && e2 >= 0) {
-                int zz = (int)zcur;
-                if (zz < 0) zz = 0;
-                if (zz > 65534) zz = 65534;
-
-                if (zz < (int)depth[index]) {
-                    depth[index] = (unsigned short)zz;
-                    pixels[index] = color;
+                    if (z < (int)depth[index]) {
+                        depth[index] = (unsigned short)z;
+                        pixels[index] = color;
+                    }
                 }
+
+                rowE0 += e0dx;
+                rowE1 += e1dx;
+                rowE2 += e2dx;
+                rowZ += dzdxFixed;
+                ++index;
             }
 
-            e0 += e0step;
-            e1 += e1step;
-            e2 += e2step;
-            zcur += dzdx;
-            ++index;
+            e0 += e0dy;
+            e1 += e1dy;
+            e2 += e2dy;
+            zFixed += dzdyFixed;
         }
-
-        e0row += e0down;
-        e1row += e1down;
-        e2row += e2down;
-        zrow += dzdy;
     }
 }
 
-bool Renderer::Project(float x, float y, float z,
-                       const Camera& c,
-                       float* sx, float* sy, float* sz)
+void Renderer::DrawQuad(const Vertex& a, const Vertex& b,
+                        const Vertex& c, const Vertex& d,
+                        Pixel color)
 {
-    float dx = x - c.x;
-    float dy = y - c.y;
-    float dz = z - c.z;
-    float vx, vy, vz;
-    float ux, uy, uz;
-
-        vx = dx * m_camCosYaw - dz * m_camSinYaw;
-    vz = dx * m_camSinYaw + dz * m_camCosYaw;
-    vy = dy;
-
-    ux = vx;
-    uy = vy * m_camCosPitch + vz * m_camSinPitch;
-    uz = -vy * m_camSinPitch + vz * m_camCosPitch;
-
-    if (uz <= NEAR_Z || uz > FAR_Z)
-        return false;
-
-    *sx = (float)m_width * 0.5f + ux * m_projScaleX / uz;
-    *sy = (float)m_height * 0.5f - uy * m_projScaleY / uz;
-    *sz = uz;
-
-    return true;
+    DrawViewTriangle(a, b, c, color);
+    DrawViewTriangle(a, c, d, color);
 }
 
-
-typedef struct ClipVertex {
-    float x;
-    float y;
-    float z;
-} ClipVertex;
-
-static ClipVertex MakeViewVertex(float x, float y, float z,
-                                 const Camera& c,
-                                 float cosYaw, float sinYaw,
-                                 float cosPitch, float sinPitch)
+void Renderer::DrawTerrain(const Terrain& terrain, const Camera& camera)
 {
-    ClipVertex v;
-    float dx = x - c.x;
-    float dy = y - c.y;
-    float dz = z - c.z;
-    float vx = dx * cosYaw - dz * sinYaw;
-    float vz = dx * sinYaw + dz * cosYaw;
-
-    v.x = vx;
-    v.y = dy * cosPitch + vz * sinPitch;
-    v.z = -dy * sinPitch + vz * cosPitch;
-    return v;
-}
-
-static ClipVertex LerpClipVertex(const ClipVertex& a,
-                                 const ClipVertex& b,
-                                 float t)
-{
-    ClipVertex v;
-    v.x = a.x + (b.x - a.x) * t;
-    v.y = a.y + (b.y - a.y) * t;
-    v.z = a.z + (b.z - a.z) * t;
-    return v;
-}
-
-void Renderer::DrawClippedTriangle(float x0, float y0, float z0,
-                                   float x1, float y1, float z1,
-                                   float x2, float y2, float z2,
-                                   DWORD color, const Camera& c)
-{
-    ClipVertex in[8];
-    ClipVertex out[8];
-    int count = 3;
-    int plane;
-    int i;
-
-    in[0] = MakeViewVertex(x0, y0, z0, c,
-                           m_camCosYaw, m_camSinYaw,
-                           m_camCosPitch, m_camSinPitch);
-    in[1] = MakeViewVertex(x1, y1, z1, c,
-                           m_camCosYaw, m_camSinYaw,
-                           m_camCosPitch, m_camSinPitch);
-    in[2] = MakeViewVertex(x2, y2, z2, c,
-                           m_camCosYaw, m_camSinYaw,
-                           m_camCosPitch, m_camSinPitch);
-
-    /* Sutherland-Hodgman clipping against near and far Z planes. */
-    for (plane = 0; plane < 2; ++plane) {
-        int outCount = 0;
-
-        for (i = 0; i < count; ++i) {
-            ClipVertex a = in[i];
-            ClipVertex b = in[(i + 1) % count];
-            float da = (plane == 0) ? (a.z - NEAR_Z) : (FAR_Z - a.z);
-            float db = (plane == 0) ? (b.z - NEAR_Z) : (FAR_Z - b.z);
-            bool aInside = da >= 0.0f;
-            bool bInside = db >= 0.0f;
-
-            if (aInside && bInside) {
-                out[outCount++] = b;
-            } else if (aInside && !bInside) {
-                float denom = da - db;
-                if (denom != 0.0f)
-                    out[outCount++] = LerpClipVertex(a, b, da / denom);
-            } else if (!aInside && bInside) {
-                float denom = db - da;
-                if (denom != 0.0f)
-                    out[outCount++] = LerpClipVertex(a, b, da / denom);
-                out[outCount++] = b;
-            }
-        }
-
-        count = outCount;
-        for (i = 0; i < count; ++i)
-            in[i] = out[i];
-
-        if (count < 3)
-            return;
-    }
-
-    /* Project the clipped polygon and fan-triangulate it. */
-    for (i = 1; i < count - 1; ++i) {
-        float sx0 = (float)m_width * 0.5f +
-                    in[0].x * m_projScaleX / in[0].z;
-        float sy0 = (float)m_height * 0.5f -
-                    in[0].y * m_projScaleY / in[0].z;
-        float sx1 = (float)m_width * 0.5f +
-                    in[i].x * m_projScaleX / in[i].z;
-        float sy1 = (float)m_height * 0.5f -
-                    in[i].y * m_projScaleY / in[i].z;
-        float sx2 = (float)m_width * 0.5f +
-                    in[i + 1].x * m_projScaleX / in[i + 1].z;
-        float sy2 = (float)m_height * 0.5f -
-                    in[i + 1].y * m_projScaleY / in[i + 1].z;
-
-        DrawTriangle(sx0, sy0, in[0].z,
-                     sx1, sy1, in[i].z,
-                     sx2, sy2, in[i + 1].z,
-                     color);
-    }
-}
-
-void Renderer::AddQuad(float x0, float y0, float z0,
-                       float x1, float y1, float z1,
-                       float x2, float y2, float z2,
-                       float x3, float y3, float z3,
-                       DWORD color, const Camera& c)
-{
-    DrawClippedTriangle(x0, y0, z0, x1, y1, z1,
-                        x2, y2, z2, color, c);
-    DrawClippedTriangle(x0, y0, z0, x2, y2, z2,
-                        x3, y3, z3, color, c);
-}
-
-void Renderer::DrawTerrain(const Terrain& t, const Camera& c)
-{
-    int cx = (int)c.x;
-    int cz = (int)c.z;
+    int cx = (int)camera.x;
+    int cz = (int)camera.z;
     int z;
 
-    DWORD topColor = Color(79, 171, 69);
-    DWORD westColor = Color(94, 69, 43);
-    DWORD eastColor = Color(79, 59, 41);
-    DWORD northColor = Color(69, 51, 36);
-    DWORD southColor = Color(86, 63, 40);
+    Pixel topColor = RGB565(79, 171, 69);
+    Pixel westColor = RGB565(94, 69, 43);
+    Pixel eastColor = RGB565(79, 59, 41);
+    Pixel northColor = RGB565(69, 51, 36);
+    Pixel southColor = RGB565(86, 63, 40);
 
     for (z = cz - TERRAIN_RADIUS; z <= cz + TERRAIN_RADIUS; ++z) {
         int x;
@@ -465,101 +500,130 @@ void Renderer::DrawTerrain(const Terrain& t, const Camera& c)
         for (x = cx - TERRAIN_RADIUS; x <= cx + TERRAIN_RADIUS; ++x) {
             int h;
             int left, right, north, south;
-            int dx = x - cx;
-            int dz = z - cz;
+            int dx, dz;
 
             if (x < 0 || x >= WORLD_SIZE)
                 continue;
 
+            dx = x - cx;
+            dz = z - cz;
+
             if (dx * dx + dz * dz > TERRAIN_RADIUS2)
                 continue;
 
-            h = t.GetHeight(x, z);
-            left = (x > 0) ? t.GetHeight(x - 1, z) : h;
-            right = (x < WORLD_SIZE - 1) ? t.GetHeight(x + 1, z) : h;
-            north = (z > 0) ? t.GetHeight(x, z - 1) : h;
-            south = (z < WORLD_SIZE - 1) ? t.GetHeight(x, z + 1) : h;
+            h = terrain.GetHeight(x, z);
+
+            left  = (x > 0) ? terrain.GetHeight(x - 1, z) : h;
+            right = (x < WORLD_SIZE - 1) ?
+                    terrain.GetHeight(x + 1, z) : h;
+            north = (z > 0) ? terrain.GetHeight(x, z - 1) : h;
+            south = (z < WORLD_SIZE - 1) ?
+                    terrain.GetHeight(x, z + 1) : h;
 
             /*
-             * Every column is a prism from its neighbor height to its top.
-             * We only emit a wall when the adjacent column is lower.
-             * The wall geometry is independent of camera position.
+             * Top.
              */
-            AddQuad((float)x, (float)h, (float)z,
-                    (float)x + 1.0f, (float)h, (float)z,
-                    (float)x + 1.0f, (float)h, (float)z + 1.0f,
-                    (float)x, (float)h, (float)z + 1.0f,
-                    topColor, c);
+            DrawQuad(
+                WorldToView((float)x,     (float)h, (float)z,     camera),
+                WorldToView((float)x + 1, (float)h, (float)z,     camera),
+                WorldToView((float)x + 1, (float)h, (float)z + 1, camera),
+                WorldToView((float)x,     (float)h, (float)z + 1, camera),
+                topColor
+            );
 
+            /*
+             * Only exposed side walls are generated.
+             * This is the main geometry reduction for the heightmap.
+             */
             if (left < h) {
-                AddQuad((float)x, (float)left, (float)z + 1.0f,
-                        (float)x, (float)h, (float)z + 1.0f,
-                        (float)x, (float)h, (float)z,
-                        (float)x, (float)left, (float)z,
-                        westColor, c);
+                DrawQuad(
+                    WorldToView((float)x, (float)left, (float)z + 1, camera),
+                    WorldToView((float)x, (float)h,    (float)z + 1, camera),
+                    WorldToView((float)x, (float)h,    (float)z,     camera),
+                    WorldToView((float)x, (float)left, (float)z,     camera),
+                    westColor
+                );
             }
 
             if (right < h) {
-                AddQuad((float)x + 1.0f, (float)right, (float)z,
-                        (float)x + 1.0f, (float)h, (float)z,
-                        (float)x + 1.0f, (float)h, (float)z + 1.0f,
-                        (float)x + 1.0f, (float)right, (float)z + 1.0f,
-                        eastColor, c);
+                DrawQuad(
+                    WorldToView((float)x + 1, (float)right, (float)z,     camera),
+                    WorldToView((float)x + 1, (float)h,     (float)z,     camera),
+                    WorldToView((float)x + 1, (float)h,     (float)z + 1, camera),
+                    WorldToView((float)x + 1, (float)right, (float)z + 1, camera),
+                    eastColor
+                );
             }
 
             if (north < h) {
-                AddQuad((float)x + 1.0f, (float)north, (float)z,
-                        (float)x + 1.0f, (float)h, (float)z,
-                        (float)x, (float)h, (float)z,
-                        (float)x, (float)north, (float)z,
-                        northColor, c);
+                DrawQuad(
+                    WorldToView((float)x + 1, (float)north, (float)z, camera),
+                    WorldToView((float)x + 1, (float)h,     (float)z, camera),
+                    WorldToView((float)x,     (float)h,     (float)z, camera),
+                    WorldToView((float)x,     (float)north, (float)z, camera),
+                    northColor
+                );
             }
 
             if (south < h) {
-                AddQuad((float)x, (float)south, (float)z + 1.0f,
-                        (float)x, (float)h, (float)z + 1.0f,
-                        (float)x + 1.0f, (float)h, (float)z + 1.0f,
-                        (float)x + 1.0f, (float)south, (float)z + 1.0f,
-                        southColor, c);
+                DrawQuad(
+                    WorldToView((float)x,     (float)south, (float)z + 1, camera),
+                    WorldToView((float)x,     (float)h,     (float)z + 1, camera),
+                    WorldToView((float)x + 1, (float)h,     (float)z + 1, camera),
+                    WorldToView((float)x + 1, (float)south, (float)z + 1, camera),
+                    southColor
+                );
             }
         }
     }
 }
 
-void Renderer::Render(const Terrain& t, const Camera& c)
+void Renderer::Render(const Terrain& terrain, const Camera& camera)
 {
-    float halfFovTan;
-    float aspect;
     HDC screen;
 
-    if (!m_dc || !m_pixels)
+    if (!m_dc || !m_pixels || !m_depth)
         return;
 
-        if (!m_cameraCacheValid || c.yaw != m_cachedYaw || c.pitch != m_cachedPitch) {
-        m_camCosYaw = (float)cos(c.yaw);
-        m_camSinYaw = (float)sin(c.yaw);
-        m_camCosPitch = (float)cos(c.pitch);
-        m_camSinPitch = (float)sin(c.pitch);
-        m_cachedYaw = c.yaw;
-        m_cachedPitch = c.pitch;
+    if (!m_cameraCacheValid ||
+        camera.yaw != m_cachedYaw ||
+        camera.pitch != m_cachedPitch) {
+
+        m_camCosYaw = (float)cos(camera.yaw);
+        m_camSinYaw = (float)sin(camera.yaw);
+        m_camCosPitch = (float)cos(camera.pitch);
+        m_camSinPitch = (float)sin(camera.pitch);
+
+        m_cachedYaw = camera.yaw;
+        m_cachedPitch = camera.pitch;
         m_cameraCacheValid = true;
     }
 
-        if (!m_projectionInitialized) {
-        halfFovTan = (float)tan(FOV * 0.5f);
-        aspect = (float)m_width / (float)m_height;
-        m_projScaleX = ((float)m_width * 0.5f) / (halfFovTan * aspect);
-        m_projScaleY = ((float)m_height * 0.5f) / halfFovTan;
-        m_projectionInitialized = true;
+    /*
+     * Projection constants never change after initialization.
+     * Vertical FOV is used so the 4:3 S730 viewport stays stable.
+     */
+    if (m_projScaleX == 1.0f && m_projScaleY == 1.0f) {
+        float halfTan = (float)tan(FOV * 0.5f);
+
+        m_projScaleY = ((float)m_height * 0.5f) / halfTan;
+        m_projScaleX = m_projScaleY;
     }
 
-    Clear(Color(115, 185, 235));
-    DrawTerrain(t, c);
+    Clear(RGB565(115, 185, 235));
+    DrawTerrain(terrain, camera);
 
+    /*
+     * GDI is used only to present our completed software framebuffer.
+     * It does not participate in 3D rendering.
+     */
     screen = GetDC(m_hwnd);
     if (screen) {
-        StretchBlt(screen, 0, 0, m_width * 2, m_height * 2,
-                   m_dc, 0, 0, m_width, m_height, SRCCOPY);
+        StretchBlt(screen,
+                   0, 0, m_width * 2, m_height * 2,
+                   m_dc,
+                   0, 0, m_width, m_height,
+                   SRCCOPY);
         ReleaseDC(m_hwnd, screen);
     }
 }
