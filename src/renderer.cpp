@@ -52,7 +52,8 @@ bool Renderer::Initialize(HWND hwnd, int width, int height)
 
 bool Renderer::CreateFramebuffer()
 {
-    BITMAPINFO bi;
+    BYTE infoBuffer[sizeof(BITMAPINFO) + (2 * sizeof(DWORD))];
+    BITMAPINFO* bi;
     HDC screen;
     DWORD* masks;
 
@@ -72,20 +73,21 @@ bool Renderer::CreateFramebuffer()
     if (!m_dc)
         return false;
 
-    ZeroMemory(&bi, sizeof(bi));
-    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bi.bmiHeader.biWidth = m_width;
-    bi.bmiHeader.biHeight = -m_height;
-    bi.bmiHeader.biPlanes = 1;
-    bi.bmiHeader.biBitCount = 16;
-    bi.bmiHeader.biCompression = BI_BITFIELDS;
+    bi = (BITMAPINFO*)infoBuffer;
+    ZeroMemory(infoBuffer, sizeof(infoBuffer));
+    bi->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi->bmiHeader.biWidth = m_width;
+    bi->bmiHeader.biHeight = -m_height;
+    bi->bmiHeader.biPlanes = 1;
+    bi->bmiHeader.biBitCount = 16;
+    bi->bmiHeader.biCompression = BI_BITFIELDS;
 
-    masks = (DWORD*)bi.bmiColors;
+    masks = (DWORD*)bi->bmiColors;
     masks[0] = 0xF800;
     masks[1] = 0x07E0;
     masks[2] = 0x001F;
 
-    m_bitmap = CreateDIBSection(m_dc, &bi, DIB_RGB_COLORS,
+    m_bitmap = CreateDIBSection(m_dc, bi, DIB_RGB_COLORS,
                                 &m_pixels, 0, 0);
     if (!m_bitmap || !m_pixels) {
         DestroyFramebuffer();
