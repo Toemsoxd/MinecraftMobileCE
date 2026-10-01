@@ -149,7 +149,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPTSTR cmd, int show)
     g_camera.y = 78;
     g_camera.z = 128;
     g_camera.yaw = 0;
-    g_camera.pitch = 0.35f;
+    g_camera.pitch = -0.45f;
 
     if (!g_renderer.Initialize(hwnd, 240, 320)) {
         MessageBox(hwnd,
