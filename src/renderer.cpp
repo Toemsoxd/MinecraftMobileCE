@@ -11,7 +11,7 @@ static const int TERRAIN_RADIUS = 9;
 static const int TERRAIN_RADIUS2 = TERRAIN_RADIUS * TERRAIN_RADIUS;
 
 /* 12.12 is enough for our 240x320 framebuffer and keeps edge math in 32-bit. */
-static const int FP_SHIFT = 12;
+static const int FP_SHIFT = 7;
 static const int FP_ONE = 1 << FP_SHIFT;
 
 static DWORD Color(unsigned char r, unsigned char g, unsigned char b)
@@ -212,7 +212,7 @@ void Renderer::DrawTriangle(float x0, float y0, float z0,
     area = (long)(fx1 - fx0) * (long)(fy2 - fy0) -
            (long)(fy1 - fy0) * (long)(fx2 - fx0);
 
-    if (area > -1 || area < 1)
+    if (area == 0)
         return;
 
     e0step = -(long)(fy1 - fy0);
