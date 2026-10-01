@@ -181,7 +181,7 @@ bool Renderer::CreateDevice(HWND hwnd, int width, int height)
     m_device->SetRenderState(D3DRS_ZENABLE, TRUE);
     m_device->SetRenderState(D3DRS_ZWRITEENABLE, TRUE);
     m_device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
-    m_device->SetFVF(VERTEX_FVF);
+    m_device->SetVertexShader(VERTEX_FVF);
 
     return true;
 }
